@@ -3,6 +3,11 @@ import os
 import logging
 import json
 from datetime import datetime
+from dotenv import load_dotenv
+from openai import AzureOpenAI
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 log_directory = os.getenv("LOG_DIR", "logs")
@@ -20,8 +25,19 @@ logger.addHandler(file_handler)
 # Simple cache configuration
 cache_file = "llm_cache.json"
 
-# By default, we Google Gemini 2.5 pro, as it shows great performance for code understanding
-def call_llm(prompt: str, use_cache: bool = True) -> str:
+# Default to Azure OpenAI
+def call_llm(prompt: str, use_cache: bool = True, provider: str = "azure") -> str:
+    """
+    Call an LLM with the given prompt.
+    
+    Args:
+        prompt: The prompt to send to the LLM
+        use_cache: Whether to use cached responses
+        provider: The LLM provider to use ('azure' is currently the only fully supported option)
+        
+    Returns:
+        The LLM response as a string
+    """
     # Log the prompt
     logger.info(f"PROMPT: {prompt}")
     
@@ -38,33 +54,48 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
         
         # Return from cache if exists
         if prompt in cache:
-            logger.info(f"RESPONSE: {cache[prompt]}")
+            logger.info(f"CACHE HIT: {cache[prompt][:100]}...")
             return cache[prompt]
     
     # Call the LLM if not in cache or cache disabled
-    client = genai.Client(
-        vertexai=True, 
-        # TODO: change to your own project id and location
-        project=os.getenv("GEMINI_PROJECT_ID", "your-project-id"),
-        location=os.getenv("GEMINI_LOCATION", "us-central1")
-    )
-    # You can comment the previous line and use the AI Studio key instead:
-    # client = genai.Client(
-    #     api_key=os.getenv("GEMINI_API_KEY", "your-api_key"),
-    # )
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25")
-    response = client.models.generate_content(
-        model=model,
-        contents=[prompt]
-    )
-    response_text = response.text
-    
-    # Log the response
-    logger.info(f"RESPONSE: {response_text}")
-    
-    # Update cache if enabled
-    if use_cache:
-        # Load cache again to avoid overwrites
+    if provider == "azure":
+        try:
+            # Use Azure OpenAI
+            client = AzureOpenAI(
+                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", "https://someendpoint.openai.azure.com/"),
+                api_key=os.getenv("AZURE_OPENAI_KEY"),
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+            )
+            
+            model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            response_text = response.choices[0].message.content
+            
+            # Log the response
+            logger.info(f"AZURE RESPONSE: {response_text[:100]}...")
+            
+            # Update cache if enabled
+            if use_cache:
+                update_cache(prompt, response_text)
+            
+            return response_text
+        except Exception as e:
+            error_msg = f"Azure OpenAI error: {str(e)}"
+            logger.error(error_msg)
+            raise Exception(error_msg)
+    elif provider == "gemini":
+        logger.warning("Gemini support is currently disabled due to authentication issues.")
+        raise NotImplementedError("Gemini support is currently disabled. Please use 'azure' provider.")
+    else:
+        raise ValueError(f"Unsupported provider: {provider}")
+
+def update_cache(prompt, response_text):
+    """Helper function to update the cache"""
+    try:
+        # Load cache
         cache = {}
         if os.path.exists(cache_file):
             try:
@@ -75,14 +106,12 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
         
         # Add to cache and save
         cache[prompt] = response_text
-        try:
-            with open(cache_file, 'w') as f:
-                json.dump(cache, f)
-        except Exception as e:
-            logger.error(f"Failed to save cache: {e}")
-    
-    return response_text
+        with open(cache_file, 'w') as f:
+            json.dump(cache, f)
+    except Exception as e:
+        logger.error(f"Failed to save cache: {e}")
 
+# Commented alternatives below can be uncommented and used if needed
 # # Use Anthropic Claude 3.7 Sonnet Extended Thinking
 # def call_llm(prompt, use_cache: bool = True):
 #     from anthropic import Anthropic
@@ -118,8 +147,14 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
 if __name__ == "__main__":
     test_prompt = "Hello, how are you?"
     
-    # First call - should hit the API
-    print("Making call...")
-    response1 = call_llm(test_prompt, use_cache=False)
-    print(f"Response: {response1}")
+    # Test Azure OpenAI
+    try:
+        print("Making call to Azure OpenAI...")
+        response = call_llm(test_prompt, use_cache=False)
+        print(f"Azure Response: {response}")
+    except Exception as e:
+        print(f"Error calling Azure OpenAI: {e}")
+    
+    # Gemini test is disabled to avoid authentication errors
+    print("\nNote: Gemini provider is currently disabled due to authentication issues.")
     
